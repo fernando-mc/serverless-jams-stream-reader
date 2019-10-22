@@ -1,0 +1,131 @@
+org: fernando
+app: serverlessjams
+service: serverless-jams-stream-reader
+
+provider:
+  name: aws
+  vpc:
+    securityGroupIds:
+      - securityGroupId1
+      - securityGroupId2
+    subnetIds:
+      - subnetId1
+      - subnetId2
+  environment:
+    STREAM_ARN: ${state:serverless-jams.voteCountsTableStreamArn}
+    AURORA_HOST: ${self:custom.AURORA.HOST}
+    AURORA_PORT: ${self:custom.AURORA.PORT}
+    AURORA_DB_NAME: ${self:custom.AURORA.DB_NAME}
+    AURORA_USERNAME: ${self:custom.AURORA.USERNAME}
+    AURORA_PASSWORD: ${self:custom.AURORA.PASSWORD}
+  runtime: nodejs10.x
+  region: us-east-1
+  iamRoleStatements:
+    - Effect: Allow
+      Action:
+        - dynamodb:GetItem
+        - dynamodb:PutItem
+        - dynamodb:UpdateItem
+        - dynamodb:DescribeStream
+        - dynamodb:GetRecords
+        - dynamodb:GetShardIterator
+        - dynamodb:ListStreams
+        - logs:*
+      Resource: '*'
+functions:
+  streamProcessor:
+    handler: streamHandler.handler
+    events:
+      - stream:
+          type: dynamodb 
+          arn: ${self:provider.environment.STREAM_ARN}
+          startingPosition: LATEST
+          batchSize: 1
+    timeout: 250
+    vpc:
+      securityGroupIds:
+        - Fn::GetAtt: ServerlessVPC.DefaultSecurityGroup
+      subnetIds:
+        - Ref: ServerlessSubnetA
+        - Ref: ServerlessSubnetB
+        - Ref: ServerlessSubnetC
+
+custom:
+  AURORA:
+    DB_NAME: aurora${opt:stage, self:provider.stage}
+    USERNAME: master
+    PASSWORD: ${param:AURORA_DB_PASSWORD}
+    HOST:
+      Fn::GetAtt: [AuroraRDSCluster, Endpoint.Address]
+    PORT:
+      Fn::GetAtt: [AuroraRDSCluster, Endpoint.Port]
+    VPC_CIDR: 10
+
+resources:
+  Resources:
+    # VPC Config
+    ServerlessVPC:
+      Type: AWS::EC2::VPC
+      Properties:
+        CidrBlock: ${self:custom.AURORA.VPC_CIDR}.0.0.0/16
+        EnableDnsSupport: true
+        EnableDnsHostnames: true
+        InstanceTenancy: default
+    ServerlessSubnetA:
+      DependsOn: ServerlessVPC
+      Type: AWS::EC2::Subnet
+      Properties:
+        VpcId:
+          Ref: ServerlessVPC
+        AvailabilityZone: ${self:provider.region}a
+        CidrBlock: ${self:custom.AURORA.VPC_CIDR}.0.0.0/24
+    ServerlessSubnetB:
+      DependsOn: ServerlessVPC
+      Type: AWS::EC2::Subnet
+      Properties:
+        VpcId:
+          Ref: ServerlessVPC
+        AvailabilityZone: ${self:provider.region}b
+        CidrBlock: ${self:custom.AURORA.VPC_CIDR}.0.1.0/24
+    ServerlessSubnetC:
+      DependsOn: ServerlessVPC
+      Type: AWS::EC2::Subnet
+      Properties:
+        VpcId:
+          Ref: ServerlessVPC
+        AvailabilityZone: ${self:provider.region}c
+        CidrBlock: ${self:custom.AURORA.VPC_CIDR}.0.2.0/24 
+    # Aurora DB config
+    AuroraSubnetGroup:
+      Type: AWS::RDS::DBSubnetGroup
+      Properties:
+        DBSubnetGroupDescription: "Aurora Subnet Group"
+        SubnetIds:
+          - Ref: ServerlessSubnetA
+          - Ref: ServerlessSubnetB
+          - Ref: ServerlessSubnetC
+    AuroraRDSCluster:
+      Type: AWS::RDS::DBCluster
+      Properties:
+        MasterUsername: ${self:custom.AURORA.USERNAME}
+        MasterUserPassword: ${self:custom.AURORA.PASSWORD}
+        DatabaseName: ${self:custom.AURORA.DB_NAME}
+        Engine: aurora
+        EngineMode: serverless
+        ScalingConfiguration:
+          AutoPause: true
+          MaxCapacity: 2
+          MinCapacity: 2
+          SecondsUntilAutoPause: 300
+        DBSubnetGroupName:
+            Ref: AuroraSubnetGroup
+    # You may also want to create a Bastion host to log into the VPC and debug the database
+    # This requires:
+    # An EC2 Instance in the VPC
+    # Updates to the Security Group to allow connections to the EC2 Instance
+    # Updates to the Security Group to allow connections to the RDS Database from the EC2 Instance
+    # Updates to the Route Tables to allow for traffic
+    # Adding an Internet Gateway
+    # Creating a PEM file to sign into the EC2 Instance
+    # Installing a mysql client 
+    # Using the connection information from environment variables to use the mysql client to connect
